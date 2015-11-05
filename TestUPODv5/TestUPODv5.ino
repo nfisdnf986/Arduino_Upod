@@ -12,8 +12,6 @@ RTC_DS3231 RTC;
 Adafruit_ADS1115 ads1;
 Adafruit_ADS1115 ads2(B1001001);
 
-// TEST
-
 #define SHT2x_address 64
 const byte mask = B11111100;
 const byte temp_command = B11100011;
