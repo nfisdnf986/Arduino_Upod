@@ -39,10 +39,31 @@ int ADC2[4];
 float V1[4];
 float V2[4];
 
+char **adc1_str;
+char **adc2_str;
+
 int wind_count = 0;
 
 
 void setup() {
+  int i=0;
+  adc1_str = (char**)malloc(4 * sizeof(char*));
+  adc2_str = (char**)malloc(4 * sizeof(char*));
+  for (i=0; i<4; i++)
+  {
+    adc1_str[i] = (char*)malloc(100 * sizeof(char));
+    adc2_str[i] = (char*)malloc(100 * sizeof(char));
+  }
+  adc1_str[0] = "fig210mW heater input power";
+  adc1_str[1] = "fig210mW Sensor Signal";
+  adc1_str[2] = "fig280mW heater input power";
+  adc1_str[3] = "fig280mW Sensor Signal";
+
+  adc2_str[0] = "baseline mocoon sensor";
+  adc2_str[1] = "ch2";
+  adc2_str[2] = "Ozone e2vO3 heater voltage";
+  adc2_str[3] = "e2vO3 Sensor Signal";
+  
   attachInterrupt(4, anemometercount, FALLING); //anemometer reed switch on pin 7--> interrupt# 4
   pinMode(11, OUTPUT);
   pinMode(10, OUTPUT);
@@ -121,6 +142,8 @@ void loop() {
   {
     ADC1[i] = ads1.readADC_SingleEnded(i);
     V1[i] = ADC1[i] * 0.1875;
+    Serial.print(adc1_str[i]);
+    Serial.print(" ");
     Serial.print(V1[i]);
     Serial.print(",");
   }
@@ -129,19 +152,29 @@ void loop() {
   {
     ADC2[i] = ads2.readADC_SingleEnded(i);
     V2[i] = ADC2[i] * 0.1875;
+    Serial.print(adc2_str[i]);
+    Serial.print(" ");
     Serial.print(V2[i]);
     Serial.print(",");
   }
+  
+  Serial.print("SHT Temp ");
   Serial.print(temperature_SHT);
   Serial.print(",");
+  
+  Serial.print("SHT Humidity ");
   Serial.print(humidity_SHT);
   Serial.print(",");
+
+  Serial.print("BMP Temp ");
   Serial.print(T);
-    Serial.print(",");
+  Serial.print(",");
+
+  Serial.print("BMP Pressure ");
   Serial.print(P);  
   //
   //  Serial.println();
-  Serial.print(", ");
+  Serial.print(", Time ");
   Serial.print(now.year(), DEC);
   Serial.print('/');
   Serial.print(now.month(), DEC);
@@ -165,14 +198,14 @@ void loop() {
   //  Serial.print("CO2: ");
   //  Serial.println(CO2);
 
-  Serial.print(",");
+  Serial.print(", Wind count ");
   Serial.print(wind_count);
-  Serial.print(",");
+  Serial.print(", Wind direction ");
   Serial.print(wind_dir);
-  Serial.print(",");
+  Serial.print(", CO2 ");
   float co2 = getS300CO2();
   Serial.println(co2);
-
+  Serial.print(", GPS ");
   while (ss.available())
   {
     char GPSin = ss.read();
