@@ -141,11 +141,17 @@ void loop() {
   for (int i = 0; i < 4; i++)
   {
     ADC1[i] = ads1.readADC_SingleEnded(i);
+    //0.1875 mV per bit. The default gain on ADC is +/-6.144 volts.
+    //The 16 bit ADC (1 drops out, acutally 15) corresponds to 32,786 possible output values(2^15).
     V1[i] = ADC1[i] * 0.1875;
     Serial.print(adc1_str[i]);
-    Serial.print(" ");
+    Serial.print(" (ADC Value): ");
+    Serial.print(ADC1[i]);
+    Serial.print(", ");
+    Serial.print(" (Output Voltage): ");
     Serial.print(V1[i]);
-    Serial.print(",");
+    Serial.print(" milliVolts");
+    Serial.print(", ");
   }
 
   for (int i = 0; i < 4; i++)
@@ -153,9 +159,13 @@ void loop() {
     ADC2[i] = ads2.readADC_SingleEnded(i);
     V2[i] = ADC2[i] * 0.1875;
     Serial.print(adc2_str[i]);
-    Serial.print(" ");
+    Serial.print(" (ADC Value): ");
+    Serial.print(ADC2[i]);
+    Serial.print(", ");
+    Serial.print(" (Output Voltage): ");
     Serial.print(V2[i]);
-    Serial.print(",");
+    Serial.print(" milliVolts");
+    Serial.print(", ");
   }
   
   Serial.print("SHT Temp ");
