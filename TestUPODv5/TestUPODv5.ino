@@ -152,6 +152,18 @@ void loop() {
     Serial.print(V1[i]);
     Serial.print(" milliVolts");
     Serial.print(", ");
+    if (i == 0){
+      float fig210mW_HeaterResistance = (306000 / V2[1]) - 34;
+      Serial.print("Resistance of Heater: ");
+      Serial.print(fig210mW_HeaterResistance);
+      Serial.print(" Ohms, ");
+    }
+    else if (i == 1){
+      float fig210mW_SensorResistance = (10000000 / V2[2]) - 2000;
+      Serial.print("Resistance of Sensor: ");
+      Serial.print(fig210mW_SensorResistance);
+      Serial.print(" Ohms, ");
+    }
   }
 
   for (int i = 0; i < 4; i++)
