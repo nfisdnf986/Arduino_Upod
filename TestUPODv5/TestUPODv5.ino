@@ -1,16 +1,34 @@
-
+#include <SPI.h>
 #include <SFE_BMP180.h>
 #include <Wire.h>
 #include <Adafruit_ADS1015.h>
-#include <RTClib.h>
 #include <RTC_DS3231.h>
-#include <SPI.h>
 #include <SoftwareSerial.h>
+#include <mcp3424.h>
+#include <Adafruit_GPS.h>
+#include <FileIO.h> //Yun SD
 
+//IMPORTANT: MODEL MUST HAVE A 2-digit ID number
+#define model "UPODXY" //UPOD model indicator
+#define first_date 12 //this the possition of the first date character in 'current_file'
+                     //s.t. the date is represented as ...MMDD...
+                     //eg. "HELLO*_MMDDYYYY" would require first_date=7
+char current_file[]="/mnt/sda1/SSMMDDYY.txt";  //make sure to check first_date value 
+
+SoftwareSerial ss(8,9);
+
+Adafruit_GPS GPS(&ss);
 RTC_DS3231 RTC;
-
 Adafruit_ADS1115 ads1;
 Adafruit_ADS1115 ads2(B1001001);
+
+mcp3424 alpha_one;
+mcp3424 alpha_two;
+float alpha_value[8];
+
+SFE_BMP180 BMP;
+double T, P, p0, a;
+char status;
 
 #define SHT2x_address 64
 const byte mask = B11111100;
@@ -22,89 +40,99 @@ byte check1, check2;
 unsigned int temperature_board, humidity_board;
 float temperature_SHT, humidity_SHT;
 
-//SHT25 address  B01100100
-//BMP180 address B11101111
-//DS3231 address B01101000
-//
-SFE_BMP180 BMP;
-double T, P, p0, a;
-char status;
+int wind_count = 0;
+const byte WDIR = A0; //Wind direction
 
-SoftwareSerial ss(8,9);
+//GPS variables
+boolean usingInterrupt = false;
+void useInterrupt(boolean);
+uint32_t timer = millis();
 
 //holders for the ads ADCs
 int ADC1[4];
 int ADC2[4];
 
-float V1[4];
-float V2[4];
-
-char **adc1_str;
-char **adc2_str;
-
-int wind_count = 0;
-
-
 void setup() {
-  int i=0;
-  adc1_str = (char**)malloc(4 * sizeof(char*));
-  adc2_str = (char**)malloc(4 * sizeof(char*));
-  for (i=0; i<4; i++)
-  {
-    adc1_str[i] = (char*)malloc(100 * sizeof(char));
-    adc2_str[i] = (char*)malloc(100 * sizeof(char));
-  }
-  adc1_str[0] = "fig210mW heater input power";
-  adc1_str[1] = "fig210mW Sensor Signal";
-  adc1_str[2] = "fig280mW heater input power";
-  adc1_str[3] = "fig280mW Sensor Signal";
-
-  adc2_str[0] = "baseline mocoon sensor";
-  adc2_str[1] = "ch2";
-  adc2_str[2] = "Ozone e2vO3 heater voltage";
-  adc2_str[3] = "e2vO3 Sensor Signal";
-  
-  attachInterrupt(4, anemometercount, FALLING); //anemometer reed switch on pin 7--> interrupt# 4
-  pinMode(11, OUTPUT);
-  pinMode(10, OUTPUT);
-  //pinMode(9,OUTPUT);
   Serial.begin(9600);
+  GPS.begin(4800);
   ads1.begin();
   ads2.begin();
-
   BMP.begin();
-  //if (BMP.begin())
-  //    Serial.println("BMP180 init success");
-  //  else
-  //  {
-  //    while(1)
-  //    {
-  //      Serial.println("BMP180 init fail\n\n");
-  //      delay(1000);
-  //    }
-  //  }
-
   RTC.begin();
-  ss.begin(4800);
-  ss.println("$PTNLSNM,0021,02");
+  Bridge.begin();  //Yun SD
+  FileSystem.begin(); //Yun SD
+  pinMode(11, OUTPUT);
+  pinMode(10, OUTPUT);
+  //Need to incorporate debounce for anemometer reed switch.
+  //Buffer time of a few hundred milliseconds is all that's needed
+  attachInterrupt(4, anemometercount, FALLING); //anemometer reed switch on pin 7--> interrupt# 4
+  
+  DateTime now = RTC.now(); //Get time from RTC
+  current_file[first_date]=now.month()/10+'0';
+  current_file[first_date+1]=now.month()%10+'0';
+  current_file[first_date+2]=now.day()/10+'0';
+  current_file[first_date+3]=now.day()%10+'0';
+  current_file[first_date+4]=((now.year()/10)%100)%10+'0';
+  current_file[first_date+5]=((now.year()%1000)%100)%10+'0';
+  //fill 'current_file' with SS of UPOD<SS> model number
+  current_file[10]=model[4]; //get the UPOD model number from defined string at header
+  current_file[11]=model[5];
+
+  File myFile = FileSystem.open(current_file, FILE_APPEND);
+  if(!myFile){
+    while(!myFile){ //Is there a better way to do this? Test/modify later
+      File myFile = FileSystem.open(current_file, FILE_APPEND);
+      digitalWrite(11,HIGH);
+      delay(500);
+      digitalWrite(11,LOW);
+      delay(500);
+  }
+ }
+  if (myFile){
+      myFile.println("RTC Date/Time, SHT Temp, SHT Humidity, BMP Temp, BMP Pressure, Wind Count, Wind Direction, Fig210 Heater ADC val(0-65535), Fig210 Sensor ADC val(0-65535), Fig280 Heater ADC val(0-65535), Fig280 Sensor ADC val(0-65535), BL Mocoon sensor ADC(0-65535), ADC2 Channel 2 - EMPTY, e2vO3 Heater ADC value (0-65535), e2vO3 Sensor ADC value (0-65535), CO2 ADC value (0-4095), Quad_Aux1, Quad_Main1, Quad_Aux2, Quad_Main2, Quad_Aux3, Quad_Main3, Quad_Aux4, Quad_Main4");
+      myFile.close();
+  }
+
+  alpha_one.GetAddress('G','F'); //user defined address for the alphasense pstat array (4-stat)
+  alpha_two.GetAddress('H','H') ;
+
+  ss.println("$PTNLSNM,0101,02"); //Address for RMC and GGA outputs. $PTNLSNM,0021,02 for GGA and ZTG
   delay(500);
-  ss.println("$PTNLSNM,0021,02"); //repeat set GPS command b/c noticed some poor GPS reads in past
-  //this sets the Copernicus to output both GGA and ZTG strings (NMEA standard)
-
-
-
+  ss.println("$PTNLSNM,0101,02"); 
+  useInterrupt(true);
 }
-
 void loop() {
   wind_count = 0;
-  int  wind_dir = analogRead(A0); //wind direction being read by A0 on Yun
-  DateTime now = RTC.now();
-
+  DateTime now = RTC.now(); //Get time from RTC
+  //This is an inefficient way of modifying the name of the .txt file everyday.
+  //It's ok in setup but not in the main loop.
+  //Should use an RTC daily interrupt. Will modify later. -Drew
+  current_file[first_date]=now.month()/10+'0';
+  current_file[first_date+1]=now.month()%10+'0';
+  current_file[first_date+2]=now.day()/10+'0';
+  current_file[first_date+3]=now.day()%10+'0';
+  current_file[first_date+4]=((now.year()/10)%100)%10+'0';
+  current_file[first_date+5]=((now.year()%1000)%100)%10+'0';
+  //Get NMEA sentence from GPS
+  if (! usingInterrupt) { 
+    // read data from the GPS in the 'main loop'
+    char c = GPS.read();
+  }
+  if (GPS.newNMEAreceived()) {
+    // a tricky thing here is if we print the NMEA sentence, or data
+    // we end up not listening and catching other sentences! 
+    // so be very wary if using OUTPUT_ALLDATA and trytng to print out data
+    //Serial.println(GPS.lastNMEA());   // this also sets the newNMEAreceived() flag to false
+    if (!GPS.parse(GPS.lastNMEA()))   // this also sets the newNMEAreceived() flag to false
+      return;  // we can fail to parse a sentence in which case we should just wait for another
+  }
+  // if millis() or timer wraps around, we'll just reset it
+  if (timer > millis())  timer = millis();
+  //Get Wind Direction
+  //int  wind_dir = get_wind_direction();
+  //Get Wind Speed...
   //Get SHT data
   get_SHT2x();
-
-  float CO2 = getS300CO2();
-
   //Get BMP data
   status = BMP.startTemperature();
   if (status != 0)
@@ -128,127 +156,105 @@ void loop() {
     T = -99;
     P = -99;
   }
-
-  //    Serial.print("Temp/Press:");
-  //    Serial.print(T);
-  //    Serial.print(",");
-  //    Serial.println(P);
-  //    Serial.print("Temp/Rh:");
-  //    Serial.print(temperature_SHT);
-  //    Serial.print(",");
-  //    Serial.print(humidity_SHT);
-  //    Serial.println("ADS voltages:");
-  for (int i = 0; i < 4; i++)
-  {
-    ADC1[i] = ads1.readADC_SingleEnded(i);
-    //0.1875 mV per bit. The default gain on ADC is +/-6.144 volts.
-    //The 16 bit ADC (1 drops out, acutally 15) corresponds to 32,786 possible output values(2^15).
-    V1[i] = ADC1[i] * 0.1875;
-    Serial.print(adc1_str[i]);
-    Serial.print(" (ADC Value): ");
-    Serial.print(ADC1[i]);
-    Serial.print(", ");
-    Serial.print(" (Output Voltage): ");
-    Serial.print(V1[i]);
-    Serial.print(" milliVolts");
-    Serial.print(", ");
-    if (i == 0){
-      float fig210mW_HeaterResistance = (306000 / V2[1]) - 34;
-      Serial.print("Resistance of Heater: ");
-      Serial.print(fig210mW_HeaterResistance);
-      Serial.print(" Ohms, ");
-    }
-    else if (i == 1){
-      float fig210mW_SensorResistance = (10000000 / V2[2]) - 2000;
-      Serial.print("Resistance of Sensor: ");
-      Serial.print(fig210mW_SensorResistance);
-      Serial.print(" Ohms, ");
-    }
-  }
-
-  for (int i = 0; i < 4; i++)
-  {
-    ADC2[i] = ads2.readADC_SingleEnded(i);
-    V2[i] = ADC2[i] * 0.1875;
-    Serial.print(adc2_str[i]);
-    Serial.print(" (ADC Value): ");
-    Serial.print(ADC2[i]);
-    Serial.print(", ");
-    Serial.print(" (Output Voltage): ");
-    Serial.print(V2[i]);
-    Serial.print(" milliVolts");
-    Serial.print(", ");
-  }
-  
-  Serial.print("SHT Temp ");
-  Serial.print(temperature_SHT);
-  Serial.print(",");
-  
-  Serial.print("SHT Humidity ");
-  Serial.print(humidity_SHT);
-  Serial.print(",");
-
-  Serial.print("BMP Temp ");
-  Serial.print(T);
-  Serial.print(",");
-
-  Serial.print("BMP Pressure ");
-  Serial.print(P);  
-  //
-  //  Serial.println();
-  Serial.print(", Time ");
-  Serial.print(now.year(), DEC);
-  Serial.print('/');
-  Serial.print(now.month(), DEC);
-  Serial.print('/');
-  Serial.print(now.day(), DEC);
-  Serial.print(' ');
-  Serial.print(now.hour(), DEC);
-  Serial.print(':');
-  Serial.print(now.minute(), DEC);
-  Serial.print(':');
-  Serial.print(now.second(), DEC);
-  //  Serial.println();
-  //
-  //  while(ss.available())
-  //  {
-  //   char GPSin=ss.read();
-  //   Serial.print(GPSin);
-  //  }
-  //  Serial.println();
-  //
-  //  Serial.print("CO2: ");
-  //  Serial.println(CO2);
-
-  Serial.print(", Wind count ");
-  Serial.print(wind_count);
-  Serial.print(", Wind direction ");
-  Serial.print(wind_dir);
-  Serial.print(", CO2 ");
+  //GET CO2 data
   float co2 = getS300CO2();
-  Serial.println(co2);
-  Serial.print(", GPS ");
-  while (ss.available())
-  {
-    char GPSin = ss.read();
-    Serial.print(GPSin);
+  //Get Quadstat data
+  alpha_value[0]=alpha_one.GetValue(1);
+  alpha_value[1]=alpha_one.GetValue(2);
+  alpha_value[2]=alpha_one.GetValue(3);
+  alpha_value[3]=alpha_one.GetValue(4);
+  alpha_value[4]=alpha_two.GetValue(1);
+  alpha_value[5]=alpha_two.GetValue(2);
+  alpha_value[6]=alpha_two.GetValue(3);
+  alpha_value[7]=alpha_two.GetValue(4);
+
+  // approximately every 2 seconds or so, print out the current stats
+  // Should put the following IF statement before the myFile.print(GPS data). Else leave GPS blank.
+  //Maybe there's a better way to do this... Not quite sure yet how to best manage SD writes of
+  //asyncronous events like GPS and windspeed.
+  if (millis() - timer > 2000) { 
+    timer = millis(); // reset the timer
+    File myFile = FileSystem.open(current_file, FILE_APPEND);
+    if (myFile){
+      myFile.print(GPS.day, DEC);
+      myFile.print('/');
+      myFile.print(GPS.month, DEC);
+      myFile.print("/20");
+      myFile.print(GPS.year, DEC);
+      myFile.print(GPS.hour, DEC);
+      myFile.print(':');
+      myFile.print(GPS.minute, DEC);
+      myFile.print(':');
+      myFile.print(GPS.seconds, DEC);
+      myFile.print('.');
+      myFile.print(GPS.milliseconds);
+      myFile.print((int)GPS.fix);
+      myFile.print((int)GPS.fixquality); 
+      myFile.print(GPS.latitudeDegrees, 4);
+      myFile.print(", "); 
+      myFile.print(GPS.longitudeDegrees, 4);
+      myFile.print(GPS.altitude);
+      myFile.print((int)GPS.satellites);
+      myFile.print(now.year(), DEC);
+      myFile.print('/');
+      myFile.print(now.month(), DEC);
+      myFile.print('/');
+      myFile.print(now.day(), DEC);
+      myFile.print(' ');
+      myFile.print(now.hour(), DEC);
+      myFile.print(':');
+      myFile.print(now.minute(), DEC);
+      myFile.print(':');
+      myFile.print(now.second(), DEC);
+      myFile.print(", ");
+      myFile.print(temperature_SHT);
+      myFile.print(", ");
+      myFile.print(humidity_SHT);
+      myFile.print(", ");
+      myFile.print(T);
+      myFile.print(", ");
+      myFile.print(P);
+      myFile.print(", ");
+      myFile.print(wind_count);
+      myFile.print(", ");
+      //myFile.print(wind_dir);
+      for (int i = 0; i < 4; i++){
+        ADC1[i] = ads1.readADC_SingleEnded(i);
+        //0.1875 mV per bit. The default gain on ADC is +/-6.144 volts.
+        //The 16 bit ADC (1 drops out, acutally 15) corresponds to 32,786 possible output values(2^15).
+        //V1[i] = ADC1[i] * 0.1875;
+        myFile.print(ADC1[i]);
+        myFile.print(", ");
+    }
+      for (int i = 0; i < 4; i++)
+      {
+        ADC2[i] = ads2.readADC_SingleEnded(i);
+//        V2[i] = ADC2[i] * 0.1875;
+        myFile.print(ADC2[i]);
+        myFile.print(", ");
+      }
+      for(int i=0;i<8;i++){
+        myFile.print(alpha_value[i]);
+        myFile.print(", ");
+        Serial.print(alpha_value[i]);
+        Serial.print(", ");
+      }
+      myFile.println(co2);
+      myFile.close();
+    }
+
+     else if(!myFile){
+       //Include LED status indicator here that loops until myFile true
+       Serial.println("Error opening datalog.txt"); 
+     }
   }
-  Serial.println();
-
-
-
-
-  // put your main code here, to run repeatedly:
+  //Indicator LEDs shows that code is going thru Main loop
   digitalWrite(11, HIGH);
   digitalWrite(10, HIGH);
-  // digitalWrite(9,HIGH);
   delay(2000);
   digitalWrite(11, LOW);
   digitalWrite(10, LOW);
-  //  digitalWrite(9,LOW);
-  delay(2000);
 }
-
 void get_SHT2x()
 {
   Wire.beginTransmission(SHT2x_address);
@@ -276,7 +282,6 @@ void get_SHT2x()
   humidity_SHT = ((125 * (float)humidity_board) / (65536)) - 6.00;
   temperature_SHT = ((175.72 * (float)temperature_board) / (65536)) - 46.85;
 }
-
 float getS300CO2()
 {
   int i = 1;
@@ -304,10 +309,73 @@ float getS300CO2()
   CO2val = reading;
   return CO2val;
 }
-
 void anemometercount()
 {
   wind_count = wind_count + 1;
 }
 
-
+//// Interrupt is called once a millisecond, looks for any new GPS data, and stores it
+SIGNAL(TIMER0_COMPA_vect) {
+  char c = GPS.read();
+}
+void useInterrupt(boolean v) {
+  if (v) {
+    // Timer0 is already used for millis() - we'll just interrupt somewhere
+    // in the middle and call the "Compare A" function above
+    OCR0A = 0xAF;
+    TIMSK0 |= _BV(OCIE0A);
+    usingInterrupt = true;
+  } else {
+    // do not call the interrupt function COMPA anymore
+    TIMSK0 &= ~_BV(OCIE0A);
+    usingInterrupt = false;
+  }
+}
+//Returns the instataneous wind speed 
+//float get_wind_speed()//Will be modified from Sparkfun's Example
+//{
+//	float deltaTime = millis() - lastWindCheck; //750ms
+//
+//	deltaTime /= 1000.0; //Covert to seconds
+//
+//	float windSpeed = (float)windClicks / deltaTime; //3 / 0.750s = 4
+//
+//	windClicks = 0; //Reset and start watching for new wind
+//	lastWindCheck = millis();
+//
+//	windSpeed *= 1.492; //4 * 1.492 = 5.968MPH
+//
+//	/* Serial.println();
+//	 Serial.print("Windspeed:");
+//	 Serial.println(windSpeed);*/
+//
+//	return(windSpeed);
+//}
+//int get_wind_direction() //Will be modified from Sparkfun's Example
+//{
+//	unsigned int adc;
+//
+//	adc = analogRead(WDIR); // get the current reading from the sensor
+//
+//	// The following table is ADC readings for the wind direction sensor output, sorted from low to high.
+//	// Each threshold is the midpoint between adjacent headings. The output is degrees for that ADC reading.
+//	// Note that these are not in compass degree order! See Weather Meters datasheet for more information.
+//
+//	if (adc < 380) return (113);
+//	if (adc < 393) return (68);
+//	if (adc < 414) return (90);
+//	if (adc < 456) return (158);
+//	if (adc < 508) return (135);
+//	if (adc < 551) return (203);
+//	if (adc < 615) return (180);
+//	if (adc < 680) return (23);
+//	if (adc < 746) return (45);
+//	if (adc < 801) return (248);
+//	if (adc < 833) return (225);
+//	if (adc < 878) return (338);
+//	if (adc < 913) return (0);
+//	if (adc < 940) return (293);
+//	if (adc < 967) return (315);
+//	if (adc < 990) return (270);
+//	return (-1); // error, disconnected?
+//}
